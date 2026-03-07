@@ -1,0 +1,21 @@
+# Render Configuration
+# This file tells Render how to build and start the backend
+
+# Python Version
+python: 3.11
+
+# Build Command
+build:
+  - pip install -r requirements.txt
+
+# Start Command  
+start: uvicorn main:app --host 0.0.0.0 --port $PORT
+
+# Environment Variables (add these in Render Dashboard)
+# - COMPANIES_HOUSE_API_KEY
+# - REDIS_URL  
+# - DATABASE_URL
+# - JWT_SECRET
+# - FCA_API_KEY
+# - LAND_REGISTRY_API_KEY
+# - EPC_API_KEY
