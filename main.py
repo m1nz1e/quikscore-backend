@@ -124,14 +124,14 @@ async def health_check():
         "version": "0.1.0"
     }
 
-# Company search endpoint
-@app.post("/api/companies/search")
-async def search_companies(request: CompanySearchRequest):
+# Company search endpoint (GET)
+@app.get("/api/companies/search")
+async def search_companies_get(query: str, items_per_page: int = 20, start_index: int = 0):
     """
-    Search for UK companies by name or number
+    Search for UK companies by name or number (GET)
     """
     # Check cache first
-    cache_key = f"search:{request.query}:{request.start_index}:{request.items_per_page}"
+    cache_key = f"search:{query}:{start_index}:{items_per_page}"
     cached_result = await cache.get(cache_key)
     if cached_result:
         return json.loads(cached_result)
@@ -141,9 +141,9 @@ async def search_companies(request: CompanySearchRequest):
         response = await client.get(
             "https://api.company-information.service.gov.uk/search/companies",
             params={
-                "q": request.query,
-                "items_per_page": request.items_per_page,
-                "start_index": request.start_index
+                "q": query,
+                "items_per_page": items_per_page,
+                "start_index": start_index
             },
             auth=(COMPANIES_HOUSE_API_KEY, "")
         )
@@ -160,6 +160,15 @@ async def search_companies(request: CompanySearchRequest):
     await cache.setex(cache_key, 3600, json.dumps(result))
     
     return result
+
+# Company search endpoint (POST)
+@app.post("/api/companies/search")
+async def search_companies_post(request: CompanySearchRequest):
+    """
+    Search for UK companies by name or number (POST)
+    """
+    # Delegate to GET endpoint for consistency
+    return await search_companies_get(request.query, request.items_per_page, request.start_index)
 
 # Get company profile with health score
 @app.get("/api/companies/{company_number}", response_model=CompanyProfile)
@@ -562,6 +571,140 @@ async def get_usage():
         "cache_hit_rate": 0.0,
         "average_response_time_ms": 0
     }
+
+
+# Company Export Endpoint - CSV/JSON/PDF
+@app.get("/api/company/{company_number}/export")
+async def export_company_data(
+    company_number: str,
+    format: str = "json",  # json, csv, or pdf
+    authorization: Optional[str] = Header(None)
+):
+    """
+    Export company data in various formats.
+    - FREE tier: Basic company info only
+    - STARTER+: Extended data
+    - PRO+: Full data including health score breakdown
+    - BUSINESS: All data + ML predictions
+    """
+    from fastapi.responses import JSONResponse, Response
+    
+    # Verify auth (optional for FREE tier basic data)
+    user_tier = "free"
+    if authorization and authorization.startswith("Bearer "):
+        token = authorization.replace("Bearer ", "")
+        try:
+            # Verify token and get user tier
+            async with httpx.AsyncClient() as client:
+                verify_resp = await client.post(
+                    f"{os.getenv('API_URL', 'http://localhost:8000')}/auth/verify",
+                    json={"token": token}
+                )
+                if verify_resp.status_code == 200:
+                    user_data = verify_resp.json()
+                    user_tier = user_data.get("user", {}).get("subscription", {}).get("tier", "free")
+        except Exception:
+            pass  # Fall back to free tier
+    
+    # Fetch company data
+    async with httpx.AsyncClient() as client:
+        profile_response = await client.get(
+            f"https://api.company-information.service.gov.uk/company/{company_number}",
+            auth=(COMPANIES_HOUSE_API_KEY, "")
+        )
+        
+        if profile_response.status_code != 200:
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "error": "company_not_found",
+                    "message": "Company not found. Please check the company number and try again.",
+                    "retry": False
+                }
+            )
+        
+        company_data = profile_response.json()
+    
+    # Build export data based on tier
+    export_data = {
+        "company_number": company_data.get("company_number"),
+        "company_name": company_data.get("company_name"),
+        "company_status": company_data.get("company_status"),
+        "company_type": company_data.get("company_type"),
+        "incorporation_date": company_data.get("date_of_creation"),
+        "registered_office_address": company_data.get("registered_office_address"),
+        "exported_at": datetime.utcnow().isoformat(),
+        "tier": user_tier,
+    }
+    
+    # Add extended data for STARTER+
+    if user_tier in ["starter", "pro", "business"]:
+        export_data["accounts"] = company_data.get("accounts")
+        export_data["confirmation_statement"] = company_data.get("confirmation_statement")
+        export_data["sic_codes"] = company_data.get("sic_codes")
+    
+    # Add health score for PRO+
+    if user_tier in ["pro", "business"]:
+        health_score = calculate_health_score(company_data)
+        export_data["health_score"] = health_score.dict()
+    
+    # Add ML predictions for BUSINESS
+    if user_tier == "business":
+        # Would call ML prediction endpoint here
+        export_data["ml_predictions"] = {"note": "Available for BUSINESS tier"}
+    
+    # Return in requested format
+    if format.lower() == "csv":
+        # Simple CSV conversion (flat structure)
+        import io
+        import csv
+        
+        output = io.StringIO()
+        writer = csv.writer(output)
+        
+        # Flatten nested dicts for CSV
+        def flatten(d, parent_key=''):
+            items = []
+            for k, v in d.items():
+                new_key = f"{parent_key}.{k}" if parent_key else k
+                if isinstance(v, dict):
+                    items.extend(flatten(v, new_key).items())
+                else:
+                    items.append((new_key, v))
+            return dict(items)
+        
+        flat_data = flatten(export_data)
+        writer.writerow(flat_data.keys())
+        writer.writerow(flat_data.values())
+        
+        return Response(
+            content=output.getvalue(),
+            media_type="text/csv",
+            headers={
+                "Content-Disposition": f"attachment; filename={company_number}_export.csv"
+            }
+        )
+    
+    elif format.lower() == "pdf":
+        # PDF generation would require a library like reportlab or weasyprint
+        # For now, return JSON with note
+        raise HTTPException(
+            status_code=501,
+            detail={
+                "error": "pdf_not_implemented",
+                "message": "PDF export is coming soon. Please use JSON or CSV format.",
+                "alternative_formats": ["json", "csv"]
+            }
+        )
+    
+    else:  # JSON (default)
+        return JSONResponse(
+            content=export_data,
+            headers={
+                "Content-Disposition": f"attachment; filename={company_number}_export.json"
+            }
+        )
+
 
 # Include auth router
 app.include_router(auth_router)
