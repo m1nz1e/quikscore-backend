@@ -170,11 +170,13 @@ async def search_companies_post(request: CompanySearchRequest):
     # Delegate to GET endpoint for consistency
     return await search_companies_get(request.query, request.items_per_page, request.start_index)
 
-# Get company profile with health score
+# Get company profile with health score (with alias route for /api/company/{number})
 @app.get("/api/companies/{company_number}", response_model=CompanyProfile)
+@app.get("/api/company/{company_number}", response_model=CompanyProfile)  # Alias route
 async def get_company_profile(company_number: str):
     """
     Get detailed company profile with AI health score
+    Supports both /api/companies/{number} and /api/company/{number}
     """
     # Check cache
     cache_key = f"company:{company_number}"
@@ -185,15 +187,48 @@ async def get_company_profile(company_number: str):
     # Fetch from Companies House
     async with httpx.AsyncClient() as client:
         # Get company profile
-        profile_response = await client.get(
-            f"https://api.company-information.service.gov.uk/company/{company_number}",
-            auth=(COMPANIES_HOUSE_API_KEY, "")
-        )
+        try:
+            profile_response = await client.get(
+                f"https://api.company-information.service.gov.uk/company/{company_number}",
+                auth=(COMPANIES_HOUSE_API_KEY, ""),
+                timeout=10.0
+            )
+        except httpx.TimeoutException:
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "error": "api_timeout",
+                    "message": "API unavailable — our servers are temporarily busy. Please try again in a few moments.",
+                    "retry": True
+                }
+            )
+        except httpx.RequestError as e:
+            raise HTTPException(
+                status_code=502,
+                detail={
+                    "error": "network_error",
+                    "message": "Network error — check your connection and try again",
+                    "retry": True
+                }
+            )
         
-        if profile_response.status_code != 200:
+        if profile_response.status_code == 404:
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "error": "company_not_found",
+                    "message": "Company not found — please check the company number and try again. UK company numbers are typically 8 digits.",
+                    "retry": False
+                }
+            )
+        elif profile_response.status_code != 200:
             raise HTTPException(
                 status_code=profile_response.status_code,
-                detail="Company not found"
+                detail={
+                    "error": "companies_house_error",
+                    "message": "Failed to fetch company data. Please try again later.",
+                    "retry": True
+                }
             )
         
         profile_data = profile_response.json()
