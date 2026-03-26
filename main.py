@@ -3,8 +3,9 @@ QuikScore API - Company Health Intelligence
 FastAPI Backend for UK Company Health Scoring
 """
 
-from fastapi import FastAPI, HTTPException, Depends, Header
+from fastapi import FastAPI, HTTPException, Depends, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
 import httpx
@@ -30,13 +31,18 @@ app = FastAPI(
     redoc_url="/redoc"
 )
 
-# CORS middleware
+# CORS middleware - Allow specific origins (required for credentials)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Configure for production
+    allow_origins=[
+        "https://quik-score.vercel.app",
+        "https://quikscore.vercel.app",
+        "http://localhost:3000",  # Dev
+        "http://192.168.0.129:3080"  # Nerve
+    ],
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization"],
 )
 
 # Configuration
@@ -103,16 +109,11 @@ async def shutdown():
     await database.disconnect()
     await cache.close()
 
-# Root endpoint
-@app.get("/")
-async def root():
-    """Root endpoint - API info"""
-    return {
-        "service": "QuikScore API",
-        "status": "running",
-        "version": "0.1.0",
-        "docs": "/docs"
-    }
+# OPTIONS preflight handler for CORS
+@app.options("/{path:path}")
+async def options_handler(path: str, request: Request):
+    """Handle CORS preflight requests"""
+    return PlainTextResponse("OK")
 
 # Health check endpoint
 @app.get("/health")

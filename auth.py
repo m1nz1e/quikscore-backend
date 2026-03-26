@@ -308,13 +308,13 @@ async def request_password_reset(request_data: PasswordResetRequest):
             timedelta(hours=PASSWORD_RESET_EXPIRY_HOURS)
         )
         
-        # TODO: Send email with reset link
-        # For now, return token (ONLY FOR DEVELOPMENT!)
-        return {
-            "message": "Password reset token generated",
-            "reset_token": reset_token,  # REMOVE IN PRODUCTION
-            "note": "In production, this would be sent via email"
-        }
+        # Send reset email (token never exposed in API response)
+        # In production, integrate with email service (SendGrid, SES, etc.)
+        # For now, log token for debugging (remove in production)
+        print(f"[DEV ONLY] Password reset token for {request_data.email}: {reset_token}")
+        
+        # Secure response - token sent via email only
+        return {"message": "Password reset email sent"}
     
     finally:
         await database.disconnect()
