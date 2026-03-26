@@ -81,12 +81,13 @@ def verify_password(password: str, hashed: str) -> bool:
     """Verify password against hash"""
     return bcrypt.checkpw(password.encode('utf-8'), hashed.encode('utf-8'))
 
-def create_jwt_token(user_id: str, email: str, expires_delta: timedelta) -> str:
-    """Create JWT token"""
+def create_jwt_token(user_id: str, email: str, expires_delta: timedelta, tier: str = "starter") -> str:
+    """Create JWT token with user tier included"""
     expire = datetime.utcnow() + expires_delta
     payload = {
         "sub": user_id,
         "email": email,
+        "tier": tier,  # Include subscription tier for rate limiting
         "exp": expire,
         "iat": datetime.utcnow(),
         "type": "access"
@@ -172,8 +173,13 @@ async def register(user_data: UserRegister):
             }
         )
         
-        # Create JWT token
-        token = create_jwt_token(user_id, user_data.email, timedelta(hours=JWT_EXPIRY_HOURS))
+        # Create JWT token with user tier
+        token = create_jwt_token(
+            user_id, 
+            user_data.email, 
+            timedelta(hours=JWT_EXPIRY_HOURS),
+            tier="free"  # New users start with free tier
+        )
         
         return TokenResponse(
             access_token=token,
