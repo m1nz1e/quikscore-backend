@@ -45,6 +45,14 @@ app.add_middleware(
     allow_headers=["Content-Type", "Authorization"],
 )
 
+# Authentication middleware - Extracts user info from JWT tokens
+from middleware.auth_middleware import AuthMiddleware
+app.add_middleware(AuthMiddleware)
+
+# Rate limiting middleware - Per-user, tier-based limits
+from middleware.rate_limiter import RateLimitMiddleware
+app.add_middleware(RateLimitMiddleware, redis_url=REDIS_URL)
+
 # Configuration
 COMPANIES_HOUSE_API_KEY = os.getenv("COMPANIES_HOUSE_API_KEY", "")
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
@@ -740,6 +748,459 @@ async def export_company_data(
                 "Content-Disposition": f"attachment; filename={company_number}_export.json"
             }
         )
+
+
+# ============================================================================
+# MISSING ENDPOINTS - Added to fix 405 errors (BUG-002)
+# These endpoints return proper responses instead of 405 Method Not Allowed
+# ============================================================================
+
+# Health Score Endpoint
+@app.get("/api/company/{company_number}/health")
+async def get_company_health(company_number: str):
+    """
+    Get company health score.
+    Returns health score data for the specified company.
+    """
+    async with httpx.AsyncClient() as client:
+        profile_response = await client.get(
+            f"https://api.company-information.service.gov.uk/company/{company_number}",
+            auth=(COMPANIES_HOUSE_API_KEY, "")
+        )
+        
+        if profile_response.status_code == 404:
+            raise HTTPException(
+                status_code=404,
+                detail={"error": "company_not_found", "message": "Company not found"}
+            )
+        elif profile_response.status_code != 200:
+            raise HTTPException(
+                status_code=502,
+                detail={"error": "companies_house_error", "message": "Failed to fetch company data"}
+            )
+        
+        company_data = profile_response.json()
+        health_score = calculate_health_score(company_data)
+        
+        return {
+            "company_number": company_number,
+            "company_name": company_data.get("company_name"),
+            "health_score": health_score.health_score,
+            "score_band": health_score.score_band,
+            "rating": health_score.score_band,
+            "color": "green" if health_score.health_score >= 75 else "yellow" if health_score.health_score >= 50 else "red",
+            "factors": [f.dict() for f in health_score.factors],
+            "recommendation": health_score.recommendation,
+            "calculated_at": health_score.calculated_at.isoformat()
+        }
+
+
+# Accounts Data Endpoint
+@app.get("/api/company/{company_number}/accounts")
+async def get_company_accounts(company_number: str):
+    """
+    Get company accounts data from Companies House.
+    """
+    async with httpx.AsyncClient() as client:
+        response = await client.get(
+            f"https://api.company-information.service.gov.uk/company/{company_number}/accounts",
+            auth=(COMPANIES_HOUSE_API_KEY, "")
+        )
+        
+        if response.status_code == 404:
+            raise HTTPException(status_code=404, detail={"error": "company_not_found", "message": "Company not found"})
+        elif response.status_code != 200:
+            raise HTTPException(status_code=502, detail={"error": "companies_house_error", "message": "Failed to fetch accounts"})
+        
+        accounts_data = response.json()
+        return {
+            "company_number": company_number,
+            "accounts": accounts_data,
+            "tier": "free"
+        }
+
+
+# Insolvency Data Endpoint
+@app.get("/api/company/{company_number}/insolvency")
+async def get_company_insolvency(company_number: str):
+    """
+    Get company insolvency data from Companies House.
+    """
+    async with httpx.AsyncClient() as client:
+        response = await client.get(
+            f"https://api.company-information.service.gov.uk/company/{company_number}/insolvency",
+            auth=(COMPANIES_HOUSE_API_KEY, "")
+        )
+        
+        if response.status_code == 404:
+            raise HTTPException(status_code=404, detail={"error": "company_not_found", "message": "Company not found"})
+        elif response.status_code != 200:
+            # Insolvency endpoint may return 404 if no insolvency data exists
+            return {
+                "company_number": company_number,
+                "insolvency_records": [],
+                "has_insolvency": False,
+                "tier": "free"
+            }
+        
+        insolvency_data = response.json()
+        return {
+            "company_number": company_number,
+            "insolvency_records": insolvency_data.get("items", []),
+            "has_insolvency": len(insolvency_data.get("items", [])) > 0,
+            "total_count": insolvency_data.get("total_count", 0),
+            "tier": "free"
+        }
+
+
+# Land Registry Data Endpoint (Not Implemented - External API Required)
+@app.get("/api/company/{company_number}/land-registry")
+async def get_land_registry_data(company_number: str):
+    """
+    Get property/land registry data for the company.
+    Note: Requires HM Land Registry API integration (planned for Business tier).
+    """
+    raise HTTPException(
+        status_code=501,
+        detail={
+            "error": "not_implemented",
+            "message": "Land registry data requires HM Land Registry API integration. Available for Business tier in Q2 2026.",
+            "planned_tier": "business",
+            "planned_release": "Q2 2026"
+        }
+    )
+
+
+# EPC (Energy Performance Certificate) Data Endpoint
+@app.get("/api/company/{company_number}/epc")
+async def get_epc_data(company_number: str):
+    """
+    Get EPC (Energy Performance Certificate) data for company properties.
+    Note: Requires integration with EPC register (planned).
+    """
+    raise HTTPException(
+        status_code=501,
+        detail={
+            "error": "not_implemented",
+            "message": "EPC data integration is planned. This will provide energy efficiency ratings for company properties.",
+            "planned_tier": "pro",
+            "planned_release": "Q2 2026"
+        }
+    )
+
+
+# CCJ (County Court Judgment) Data Endpoint
+@app.get("/api/company/{company_number}/ccj")
+async def get_ccj_data(company_number: str):
+    """
+    Get CCJ (County Court Judgment) data for the company.
+    Note: Requires Registry Trust API integration (planned for Pro/Business tier).
+    """
+    raise HTTPException(
+        status_code=501,
+        detail={
+            "error": "not_implemented",
+            "message": "CCJ data requires Registry Trust API integration. Available for Pro/Business tier in Q2 2026.",
+            "planned_tier": "pro",
+            "planned_release": "Q2 2026"
+        }
+    )
+
+
+# FCA (Financial Conduct Authority) Data Endpoint
+@app.get("/api/company/{company_number}/fca")
+async def get_fca_data(company_number: str):
+    """
+    Get FCA registration and regulatory data for the company.
+    Note: Requires FCA API integration (planned for Business tier).
+    """
+    raise HTTPException(
+        status_code=501,
+        detail={
+            "error": "not_implemented",
+            "message": "FCA regulatory data requires FCA API integration. Available for Business tier in Q2 2026.",
+            "planned_tier": "business",
+            "planned_release": "Q2 2026"
+        }
+    )
+
+
+# Officer Network Endpoint
+@app.get("/api/company/{company_number}/officer-network")
+async def get_officer_network(company_number: str):
+    """
+    Get officer network analysis - shows connections between directors across companies.
+    Uses director attention score data.
+    """
+    async with httpx.AsyncClient() as client:
+        # Get officers list
+        officers_response = await client.get(
+            f"https://api.company-information.service.gov.uk/company/{company_number}/officers",
+            auth=(COMPANIES_HOUSE_API_KEY, "")
+        )
+        
+        if officers_response.status_code != 200:
+            raise HTTPException(status_code=502, detail={"error": "companies_house_error", "message": "Failed to fetch officers"})
+        
+        officers_data = officers_response.json()
+        officers = officers_data.get("items", [])
+        
+        # Build officer network (simplified - in production would cross-reference all appointments)
+        officer_network = []
+        for officer in officers:
+            if officer.get("officer_role") == "director":
+                officer_network.append({
+                    "name": officer.get("name"),
+                    "officer_role": officer.get("officer_role"),
+                    "appointed_on": officer.get("appointed_on"),
+                    "resigned_on": officer.get("resigned_on"),
+                    "attention_score": officer.get("attention_score", {}),
+                    "other_appointments": "Available in Pro tier"  # Would fetch from cross-reference
+                })
+        
+        return {
+            "company_number": company_number,
+            "officer_network": officer_network,
+            "total_officers": len(officers),
+            "active_directors": len([o for o in officers if o.get("officer_role") == "director" and not o.get("resigned_on")]),
+            "tier": "free"
+        }
+
+
+# Similar Companies Endpoint
+@app.get("/api/company/{company_number}/similar")
+async def get_similar_companies(company_number: str):
+    """
+    Get similar companies based on SIC codes, size, and industry.
+    Uses Companies House data to find comparable companies.
+    """
+    async with httpx.AsyncClient() as client:
+        # Get company profile for SIC codes
+        profile_response = await client.get(
+            f"https://api.company-information.service.gov.uk/company/{company_number}",
+            auth=(COMPANIES_HOUSE_API_KEY, "")
+        )
+        
+        if profile_response.status_code != 200:
+            raise HTTPException(status_code=404, detail={"error": "company_not_found", "message": "Company not found"})
+        
+        company_data = profile_response.json()
+        sic_codes = company_data.get("sic_codes", [])
+        
+        # Search for similar companies by SIC code (simplified)
+        if sic_codes:
+            search_response = await client.get(
+                "https://api.company-information.service.gov.uk/search/companies",
+                params={"q": sic_codes[0], "items_per_page": 5},
+                auth=(COMPANIES_HOUSE_API_KEY, "")
+            )
+            
+            if search_response.status_code == 200:
+                search_results = search_response.json()
+                similar = [
+                    {
+                        "company_number": c.get("company_number"),
+                        "company_name": c.get("title"),
+                        "company_status": c.get("company_status"),
+                        "similarity_reason": "Same SIC code"
+                    }
+                    for c in search_results.get("items", [])[:5]
+                    if c.get("company_number") != company_number
+                ]
+            else:
+                similar = []
+        else:
+            similar = []
+        
+        return {
+            "company_number": company_number,
+            "similar_companies": similar,
+            "based_on": {"sic_codes": sic_codes},
+            "tier": "free"
+        }
+
+
+# Trends Data Endpoint
+@app.get("/api/company/{company_number}/trends")
+async def get_company_trends(company_number: str):
+    """
+    Get company trends analysis - filing patterns, health score history.
+    Note: Full trends require historical data storage (planned for Pro tier).
+    """
+    async with httpx.AsyncClient() as client:
+        # Get filing history for trend analysis
+        filing_response = await client.get(
+            f"https://api.company-information.service.gov.uk/company/{company_number}/filing-history",
+            auth=(COMPANIES_HOUSE_API_KEY, ""),
+            params={"items_per_page": 50}
+        )
+        
+        if filing_response.status_code != 200:
+            raise HTTPException(status_code=502, detail={"error": "companies_house_error", "message": "Failed to fetch filing history"})
+        
+        filing_data = filing_response.json()
+        items = filing_data.get("items", [])
+        
+        # Analyze filing patterns (simplified)
+        filing_types = {}
+        for item in items:
+            category = item.get("category", "unknown")
+            filing_types[category] = filing_types.get(category, 0) + 1
+        
+        return {
+            "company_number": company_number,
+            "filing_trends": {
+                "total_filings": len(items),
+                "by_category": filing_types,
+                "recent_filing_count": len([i for i in items if i.get("date") and i["date"] > "2025-01-01"])
+            },
+            "health_score_trend": "Historical trends available in Pro tier",
+            "tier": "free"
+        }
+
+
+# Filing History Endpoint
+@app.get("/api/company/{company_number}/filing-history")
+async def get_filing_history(company_number: str, items_per_page: int = 25):
+    """
+    Get company filing history from Companies House.
+    """
+    async with httpx.AsyncClient() as client:
+        response = await client.get(
+            f"https://api.company-information.service.gov.uk/company/{company_number}/filing-history",
+            auth=(COMPANIES_HOUSE_API_KEY, ""),
+            params={"items_per_page": items_per_page}
+        )
+        
+        if response.status_code == 404:
+            raise HTTPException(status_code=404, detail={"error": "company_not_found", "message": "Company not found"})
+        elif response.status_code != 200:
+            raise HTTPException(status_code=502, detail={"error": "companies_house_error", "message": "Failed to fetch filing history"})
+        
+        filing_data = response.json()
+        return {
+            "company_number": company_number,
+            "filing_history": filing_data.get("items", []),
+            "total_count": filing_data.get("total_count", 0),
+            "start_index": filing_data.get("start_index", 0),
+            "tier": "free"
+        }
+
+
+# Persons with Significant Control (PSC) Endpoint
+@app.get("/api/company/{company_number}/persons-with-significant-control")
+async def get_psc_data(company_number: str):
+    """
+    Get Persons with Significant Control (PSC) data from Companies House.
+    """
+    async with httpx.AsyncClient() as client:
+        response = await client.get(
+            f"https://api.company-information.service.gov.uk/company/{company_number}/persons-with-significant-control",
+            auth=(COMPANIES_HOUSE_API_KEY, "")
+        )
+        
+        if response.status_code == 404:
+            raise HTTPException(status_code=404, detail={"error": "company_not_found", "message": "Company not found"})
+        elif response.status_code != 200:
+            raise HTTPException(status_code=502, detail={"error": "companies_house_error", "message": "Failed to fetch PSC data"})
+        
+        psd_data = response.json()
+        return {
+            "company_number": company_number,
+            "persons_with_significant_control": psd_data.get("items", []),
+            "total_count": psd_data.get("total_count", 0),
+            "tier": "free"
+        }
+
+
+# User Profile Endpoint
+@app.get("/api/user/profile")
+async def get_user_profile(authorization: Optional[str] = Header(None)):
+    """
+    Get current user profile. Requires authentication.
+    """
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(
+            status_code=401,
+            detail={"error": "unauthorized", "message": "Authentication required. Please provide a valid JWT token."}
+        )
+    
+    token = authorization.replace("Bearer ", "")
+    
+    try:
+        async with httpx.AsyncClient() as client:
+            verify_resp = await client.post(
+                f"{os.getenv('API_URL', 'http://localhost:8000')}/auth/verify",
+                json={"token": token}
+            )
+            
+            if verify_resp.status_code != 200 or not verify_resp.json().get("valid"):
+                raise HTTPException(
+                    status_code=401,
+                    detail={"error": "invalid_token", "message": "Invalid or expired token"}
+                )
+            
+            user_data = verify_resp.json().get("user", {})
+            return {
+                "user": user_data,
+                "tier": user_data.get("subscription_tier", "free")
+            }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail={"error": "auth_service_error", "message": "Authentication service unavailable"})
+
+
+# User Subscription Endpoint
+@app.get("/api/user/subscription")
+async def get_user_subscription(authorization: Optional[str] = Header(None)):
+    """
+    Get current user subscription details. Requires authentication.
+    """
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(
+            status_code=401,
+            detail={"error": "unauthorized", "message": "Authentication required. Please provide a valid JWT token."}
+        )
+    
+    token = authorization.replace("Bearer ", "")
+    
+    try:
+        async with httpx.AsyncClient() as client:
+            verify_resp = await client.post(
+                f"{os.getenv('API_URL', 'http://localhost:8000')}/auth/verify",
+                json={"token": token}
+            )
+            
+            if verify_resp.status_code != 200 or not verify_resp.json().get("valid"):
+                raise HTTPException(
+                    status_code=401,
+                    detail={"error": "invalid_token", "message": "Invalid or expired token"}
+                )
+            
+            user_data = verify_resp.json().get("user", {})
+            return {
+                "subscription": {
+                    "tier": user_data.get("subscription_tier", "free"),
+                    "status": user_data.get("subscription_status", "inactive"),
+                    "features": get_tier_features(user_data.get("subscription_tier", "free"))
+                }
+            }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail={"error": "auth_service_error", "message": "Authentication service unavailable"})
+
+
+def get_tier_features(tier: str) -> List[str]:
+    """Return feature list for subscription tier"""
+    features = {
+        "free": ["Basic company lookup", "Health score", "5 searches/day"],
+        "starter": ["Extended data", "Export (CSV/JSON)", "50 searches/day"],
+        "pro": ["Advanced metrics", "Bulk lookups", "Officer network", "Unlimited searches"],
+        "business": ["ML predictions", "API access", "Land registry data", "Priority support"]
+    }
+    return features.get(tier, features["free"])
 
 
 # Include auth router
