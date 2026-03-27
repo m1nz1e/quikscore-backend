@@ -45,6 +45,11 @@ app.add_middleware(
     allow_headers=["Content-Type", "Authorization"],
 )
 
+# Configuration
+COMPANIES_HOUSE_API_KEY = os.getenv("COMPANIES_HOUSE_API_KEY", "")
+REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://localhost/quikscore")
+
 # Authentication middleware - Extracts user info from JWT tokens
 from middleware.auth_middleware import AuthMiddleware
 app.add_middleware(AuthMiddleware)
@@ -60,11 +65,6 @@ app.add_middleware(RequestLoggerMiddleware)
 # Scraper blocker middleware - Blocks known automated scraping tools
 from middleware.scraper_blocker import ScraperBlockerMiddleware
 app.add_middleware(ScraperBlockerMiddleware)
-
-# Configuration
-COMPANIES_HOUSE_API_KEY = os.getenv("COMPANIES_HOUSE_API_KEY", "")
-REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://localhost/quikscore")
 
 # Initialize Redis cache
 cache = redis.from_url(REDIS_URL, encoding="utf-8", decode_responses=True)
