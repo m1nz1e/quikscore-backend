@@ -53,6 +53,14 @@ app.add_middleware(AuthMiddleware)
 from middleware.rate_limiter import RateLimitMiddleware
 app.add_middleware(RateLimitMiddleware, redis_url=REDIS_URL)
 
+# Request logger middleware - Logs all requests for security monitoring
+from middleware.request_logger import RequestLoggerMiddleware
+app.add_middleware(RequestLoggerMiddleware)
+
+# Scraper blocker middleware - Blocks known automated scraping tools
+from middleware.scraper_blocker import ScraperBlockerMiddleware
+app.add_middleware(ScraperBlockerMiddleware)
+
 # Configuration
 COMPANIES_HOUSE_API_KEY = os.getenv("COMPANIES_HOUSE_API_KEY", "")
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
@@ -1205,6 +1213,14 @@ def get_tier_features(tier: str) -> List[str]:
 
 # Include auth router
 app.include_router(auth_router)
+
+# Include honeypot endpoints (trap endpoints for scraper detection)
+from endpoints_honeypot import router as honeypot_router
+app.include_router(honeypot_router)
+
+# Include admin endpoints (security monitoring)
+from admin import router as admin_router
+app.include_router(admin_router)
 
 if __name__ == "__main__":
     import uvicorn

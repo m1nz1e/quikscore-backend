@@ -24,17 +24,38 @@ import os
 # ============================================================================
 # TIER-BASED RATE LIMIT CONFIGURATION
 # ============================================================================
-RATE_LIMITS = {
+# Subscription tier limits (for authenticated users)
+SUBSCRIPTION_LIMITS = {
     "free": {"requests": 60, "period": 3600},      # 60 req/hour
     "starter": {"requests": 60, "period": 60},     # 60 req/min
     "pro": {"requests": 120, "period": 60},        # 120 req/min
     "business": {"requests": 300, "period": 60},   # 300 req/min
 }
 
+# Anti-scraper tiered limits by authentication status
+RATE_LIMITS = {
+    'unauthenticated': 20,  # 20 req/min for anonymous users
+    'authenticated': 60,    # 60 req/min for logged-in users
+    'api_key': 300,         # 300 req/min for API key holders
+}
+
 
 def get_rate_limit_for_plan(plan: str) -> Dict[str, int]:
     """Get rate limit configuration for a subscription plan"""
-    return RATE_LIMITS.get(plan.lower(), RATE_LIMITS["starter"])
+    return SUBSCRIPTION_LIMITS.get(plan.lower(), SUBSCRIPTION_LIMITS["starter"])
+
+
+def get_rate_limit_by_auth_status(auth_status: str) -> int:
+    """
+    Get rate limit by authentication status (anti-scraper tiered limits)
+    
+    Args:
+        auth_status: One of 'unauthenticated', 'authenticated', 'api_key'
+        
+    Returns:
+        Requests per minute limit
+    """
+    return RATE_LIMITS.get(auth_status, RATE_LIMITS['unauthenticated'])
 
 
 # ============================================================================
@@ -188,7 +209,16 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         user_id = getattr(request.state, 'user_id', None)
         user_tier = getattr(request.state, 'user_tier', 'starter')
         
-        # If no user info, use anonymous/free tier with IP-based limiting
+        # Determine rate limit tier based on authentication status (anti-scraper)
+        auth_header = request.headers.get("authorization")
+        if auth_header:
+            auth_status = 'authenticated'
+            limit = RATE_LIMITS['authenticated']  # 60 req/min
+        else:
+            auth_status = 'unauthenticated'
+            limit = RATE_LIMITS['unauthenticated']  # 20 req/min (stricter for anonymous)
+        
+        # If no user info, use IP-based limiting with unauthenticated rate
         if not user_id:
             # Use client IP as identifier
             forwarded_for = request.headers.get("X-Forwarded-For")
@@ -196,12 +226,15 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                 user_id = forwarded_for.split(",")[0].strip()
             else:
                 user_id = request.client.host if request.client else "anonymous"
-            user_tier = "free"
         
-        # Get rate limit config for user's tier
-        rate_config = get_rate_limit_for_plan(user_tier)
-        limit = rate_config["requests"]
-        period = rate_config["period"]
+        # Use subscription tier limits if user is authenticated (more permissive)
+        if user_id and auth_status == 'authenticated':
+            rate_config = get_rate_limit_for_plan(user_tier)
+            limit = rate_config["requests"]
+            period = rate_config["period"]
+        else:
+            # Use anti-scraper limits for unauthenticated users
+            period = 60  # 1 minute window
         
         # Check rate limit
         if isinstance(self.limiter, InMemoryRateLimiter):
