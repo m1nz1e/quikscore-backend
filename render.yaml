@@ -4,9 +4,8 @@
 # Python Version
 python: 3.11
 
-# Build Command
-build:
-  - pip install -r requirements.txt
+# Build Command (single line, not list)
+build: pip install -r requirements.txt
 
 # Start Command  
 start: uvicorn main:app --host 0.0.0.0 --port $PORT
