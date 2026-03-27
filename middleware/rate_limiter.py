@@ -18,8 +18,15 @@ from starlette.responses import JSONResponse
 from typing import Dict, Optional, Tuple
 import time
 from collections import defaultdict
-import redis.asyncio as redis
 import os
+
+# Lazy import redis - only needed if REDIS_URL is configured
+try:
+    import redis.asyncio as redis
+    REDIS_AVAILABLE = True
+except ImportError:
+    redis = None
+    REDIS_AVAILABLE = False
 
 # ============================================================================
 # TIER-BASED RATE LIMIT CONFIGURATION
@@ -168,10 +175,10 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         
         self.redis_url = redis_url or os.getenv("REDIS_URL")
         self.limiter = InMemoryRateLimiter()
-        self.redis_client: Optional[redis.Redis] = None
+        self.redis_client = None
         
-        # Try to connect to Redis
-        if self.redis_url:
+        # Try to connect to Redis (only if redis is available)
+        if self.redis_url and REDIS_AVAILABLE:
             try:
                 import asyncio
                 self.redis_client = redis.from_url(
@@ -193,7 +200,10 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                 print(f"[RATE LIMIT] ⚠️ Redis unavailable ({e.__class__.__name__}), using in-memory fallback")
                 self.redis_client = None
         else:
-            print("[RATE LIMIT] ℹ️ No Redis URL configured, using in-memory rate limiting")
+            if not REDIS_AVAILABLE:
+                print("[RATE LIMIT] ℹ️ Redis package not installed, using in-memory rate limiting")
+            else:
+                print("[RATE LIMIT] ℹ️ No Redis URL configured, using in-memory rate limiting")
     
     async def dispatch(self, request: Request, call_next):
         # Skip rate limiting for public endpoints
