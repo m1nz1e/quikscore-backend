@@ -117,7 +117,7 @@ class RedisRateLimiter:
     Uses sliding window algorithm with sorted sets
     """
     
-    def __init__(self, redis_client: redis.Redis):
+    def __init__(self, redis_client):
         self.redis = redis_client
     
     async def is_allowed(self, user_id: str, limit: int, period: int) -> Tuple[bool, int, int]:
