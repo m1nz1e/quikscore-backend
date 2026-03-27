@@ -12,7 +12,6 @@ import httpx
 import os
 import json
 from datetime import datetime, timedelta
-import redis.asyncio as redis
 from databases import Database
 from dotenv import load_dotenv
 from health_scorer import QuikScoreEngine
@@ -21,6 +20,16 @@ from auth import router as auth_router
 
 # Load environment variables
 load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), '..', '.env'))
+
+# Lazy import redis - only after env vars are loaded
+REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
+try:
+    import redis.asyncio as redis
+    REDIS_AVAILABLE = True
+except ImportError:
+    redis = None
+    REDIS_AVAILABLE = False
+    print("[WARNING] Redis package not installed, using in-memory caching only")
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -47,7 +56,6 @@ app.add_middleware(
 
 # Configuration
 COMPANIES_HOUSE_API_KEY = os.getenv("COMPANIES_HOUSE_API_KEY", "")
-REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://localhost/quikscore")
 
 # Authentication middleware - Extracts user info from JWT tokens
@@ -66,8 +74,12 @@ app.add_middleware(RequestLoggerMiddleware)
 from middleware.scraper_blocker import ScraperBlockerMiddleware
 app.add_middleware(ScraperBlockerMiddleware)
 
-# Initialize Redis cache
-cache = redis.from_url(REDIS_URL, encoding="utf-8", decode_responses=True)
+# Initialize Redis cache (only if redis is available)
+if REDIS_AVAILABLE:
+    cache = redis.from_url(REDIS_URL, encoding="utf-8", decode_responses=True)
+else:
+    cache = None
+    print("[WARNING] Redis cache not available, some features may be limited")
 
 # Initialize database
 database = Database(DATABASE_URL)
@@ -123,7 +135,8 @@ async def startup():
 async def shutdown():
     """Close database connection"""
     await database.disconnect()
-    await cache.close()
+    if cache:
+        await cache.close()
 
 # OPTIONS preflight handler for CORS
 @app.options("/{path:path}")
@@ -147,11 +160,12 @@ async def search_companies_get(query: str, items_per_page: int = 20, start_index
     """
     Search for UK companies by name or number (GET)
     """
-    # Check cache first
+    # Check cache first (if available)
     cache_key = f"search:{query}:{start_index}:{items_per_page}"
-    cached_result = await cache.get(cache_key)
-    if cached_result:
-        return json.loads(cached_result)
+    if cache:
+        cached_result = await cache.get(cache_key)
+        if cached_result:
+            return json.loads(cached_result)
     
     # Call Companies House API
     async with httpx.AsyncClient() as client:
@@ -173,8 +187,9 @@ async def search_companies_get(query: str, items_per_page: int = 20, start_index
         
         result = response.json()
     
-    # Cache for 1 hour
-    await cache.setex(cache_key, 3600, json.dumps(result))
+    # Cache for 1 hour (if available)
+    if cache:
+        await cache.setex(cache_key, 3600, json.dumps(result))
     
     return result
 
@@ -195,11 +210,12 @@ async def get_company_profile(company_number: str):
     Get detailed company profile with AI health score
     Supports both /api/companies/{number} and /api/company/{number}
     """
-    # Check cache
+    # Check cache (if available)
     cache_key = f"company:{company_number}"
-    cached_result = await cache.get(cache_key)
-    if cached_result:
-        return json.loads(cached_result)
+    if cache:
+        cached_result = await cache.get(cache_key)
+        if cached_result:
+            return json.loads(cached_result)
     
     # Fetch from Companies House
     async with httpx.AsyncClient() as client:
@@ -266,8 +282,9 @@ async def get_company_profile(company_number: str):
         health_score=health_score
     )
     
-    # Cache for 24 hours
-    await cache.setex(cache_key, 86400, result.json())
+    # Cache for 24 hours (if available)
+    if cache:
+        await cache.setex(cache_key, 86400, result.json())
     
     return result
 
