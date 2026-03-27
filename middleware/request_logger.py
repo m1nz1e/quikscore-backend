@@ -26,14 +26,17 @@ import json
 logger = logging.getLogger("scraper_detection")
 logger.setLevel(logging.INFO)
 
-# Ensure logs directory exists
+# Ensure logs directory exists (skip on read-only filesystems like Render build)
 import os
-os.makedirs("logs", exist_ok=True)
-
-# File handler for scraper detection logs
-file_handler = logging.FileHandler("logs/scraper_detection.log")
-file_handler.setFormatter(logging.Formatter('%(asctime)s - %(message)s'))
-logger.addHandler(file_handler)
+try:
+    os.makedirs("logs", exist_ok=True)
+    # File handler for scraper detection logs
+    file_handler = logging.FileHandler("logs/scraper_detection.log")
+    file_handler.setFormatter(logging.Formatter('%(asctime)s - %(message)s'))
+    logger.addHandler(file_handler)
+except (OSError, PermissionError):
+    # Skip file logging on read-only filesystems (Render build environment)
+    pass
 
 # Also log to console for development
 console_handler = logging.StreamHandler()
